@@ -12,13 +12,46 @@
     line-height: 1.6rem;
 }
 
+#edit_mode_select{width:auto !important}
+
 input[type=number]:disabled { -moz-appearance: textfield; }
 
 #generate, #img2img_mask_btn, #img2img_edit_btn {
     align-self: stretch;
 }
 
-#gan_image {
-    width: 512px;
-    height: auto;
-}
+#body>.col:nth-child(2){width:250%;max-width:89vw}
+#body{background:#111111;}
+html{background:black !important;}
+body{background:black !important;}
+#generate{width:100%;}
+.dark .dark\:bg-gray-950{--tw-bg-opacity: 1;background-color: #111111 !important;}
+.dark .dark\:bg-gray-900{--tw-bg-opacity: 1;background-color: #111111 !important;}
+#16{display:none;}#17{display:none;}#18{display:none;}
+.dark .border,.dark .border-gray-100,.dark .border-gray-200,.dark .border-gray-300{--tw-border-opacity:1;border-color:#111111}
+.dark .gr-box{--tw-bg-opacity:1;background-color:#222222;}bg-gray-900{--tw-bg-opacity:1;background-color:#000}
+.dark .gr-button-secondary{border-color:#fff;color:#fff;background:#000;border:1px solid #fff}
+.w-full{background:#111111;}
+.mx-auto{background:#111111;}
+.gr-button{background: white !important;color: black !important;}
+.gr-panel{padding-left:0;padding-right:0;}
+div.svelte-10ogue4>* + *:not(.absolute) {border-top-width: 1px !important;!important;color: black !important;width: 100%;}
+.dark .wrap.svelte-2fvq7v {--tw-bg-opacity: 1;background-color: #393939;}
+button:active{background: #333333 !important;color: black;font-weight: 600;}
+.dark .bg-white {--tw-bg-opacity: 1;background-color: #333333 !important;color:white!important;}
+#prompt_row input{font-size:20px}
+#generate{background:orange !important;}
+.dark .gr-input-label {background: #333333 !important;}
+input[type=number]:disabled{-moz-appearance: textfield;+}
+input{filter:hue-rotate(180deg);}
+textarea{filter:hue-rotate(180deg);}
+.dark:border-gray-700{filter:hue-rotate(180deg);}
+.dark .dark\:border-gray-700 {filter:hue-rotate(180deg);}
+#text2img_batch-size{display:none !important;}
+#img2img_batch-size{display:none !important;}
+.login{display:inline;margin:25px;padding:0;background:black;}
+#login{display:inline;margin:25px;padding:0;background:black;}
+div.svelte-10ogue4>*:not(.absolute) {border-radius: 5px !important;}
+.dark .gr-button-secondary {border-color: #fff;color: #fff;background: #999999 !important;border: 1px solid black;width: 100% !important;border-radius: 5px !important;}
+.shadow-md {--tw-shadow: 0 !important;--tw-shadow-colored: 0 !important;box-shadow: 0 !important;}
+.bg-gray-50 {--tw-bg-opacity: 1 !important;background-color: #111111 !important;}
