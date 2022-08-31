@@ -8,17 +8,17 @@ def draw_gradio_ui(opt, img2img=lambda x: x, txt2img=lambda x: x, txt2img_defaul
                    img2img_toggles={}, img2img_toggle_defaults={}, sample_img2img=None, img2img_mask_modes=None,
                    img2img_resize_modes=None, user_defaults={}, run_GFPGAN=lambda x: x, run_RealESRGAN=lambda x: x):
 
-    with gr.Blocks(css=css(opt), analytics_enabled=False, title="Stable Diffusion WebUI") as demo:
+    with gr.Blocks(css=css(opt), analytics_enabled=False, title="Stable Diffusion - User Interface") as demo:
         gr.HTML("""
     <div class="header_panel">
   <h1 class="heading-6" style="margin-top: 10px;margin-bottom: 15px;color: #fff;font-size: 40px;line-height: 1;font-weight: 900;">
     // 
     <span class="text-span-8" style="color: #f6a523;font-weight: 600;">
-        SD.GUI
+        SD.UI
     </span>
   </h1>
   <h2 class="heading-7" style="color: #f5f5f5;font-size: 20px;line-height: 1;font-weight: 400;margin-bottom:25px;">
-    Image synthesis GUI built on Stable Diffusion
+    Image synthesis UI built on Stable Diffusion
   </h2>
 </div>
     """)
@@ -45,7 +45,7 @@ def draw_gradio_ui(opt, img2img=lambda x: x, txt2img=lambda x: x, txt2img_defaul
                                                 value=txt2img_defaults['cfg_scale'])
                         txt2img_seed = gr.Textbox(label="Seed (blank to randomize)", lines=1, max_lines=1,
                                                   value=txt2img_defaults["seed"])
-                        txt2img_batch_count = gr.Slider(minimum=1, maximum=25, step=1,
+                        txt2img_batch_count = gr.Slider(minimum=1, maximum=9, step=1,
                                                         label='Batch count (Number of images to generate)',
                                                         value=txt2img_defaults['n_iter'])
                         txt2img_batch_size = gr.Slider(minimum=1, maximum=1, step=1, elem_id="text2img_batch-size",

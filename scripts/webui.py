@@ -23,7 +23,7 @@ parser.add_argument("--no-verify-input", action='store_true', help="do not verif
 parser.add_argument("--no-half", action='store_true', help="do not switch the model to 16-bit floats", default=False)
 parser.add_argument("--no-progressbar-hiding", action='store_true', help="do not hide progressbar in gradio UI (we hide it because it slows down ML if you have hardware accleration in browser)", default=False)
 parser.add_argument("--share", action='store_true', help="Should share your server on gradio.app, this allows you to use the UI from your mobile app", default=False)
-parser.add_argument("--share-password", type=str, help="Sharing is open by default, use this to set a password. Username: webui", default=None)
+parser.add_argument("--share-password", type=str, help="Sharing is open by default, use this to set a password. Username: alpha", default=None)
 parser.add_argument("--defaults", type=str, help="path to configuration file providing UI defaults, uses same format as cli parameter", default='configs/webui/webui.yaml')
 parser.add_argument("--gpu", type=int, help="choose which GPU to use if you have multiple", default=0)
 parser.add_argument("--extra-models-cpu", action='store_true', help="run extra models (GFGPAN/ESRGAN) on cpu", default=False)
@@ -357,7 +357,8 @@ if opt.optimized:
 
     model = instantiate_from_config(config.modelUNet)
     _, _ = model.load_state_dict(sd, strict=False)
-    model.cuda()
+    if not opt.optimized:
+        model.cuda()
     model.eval()
     model.turbo = opt.optimized_turbo
 
@@ -420,7 +421,7 @@ def image_grid(imgs, batch_size, force_n_rows=None, captions=None):
 
     for i, img in enumerate(imgs):
         grid.paste(img, box=(i % cols * w, i // cols * h))
-        if captions and i<len(captions):
+        if captions:
             d = ImageDraw.Draw( grid )
             size = d.textbbox( (0,0), captions[i], font=fnt, stroke_width=2, align="center" )
             d.multiline_text((i % cols * w + w/2, i // cols * h + h - size[3]), captions[i], font=fnt, fill=(255,255,255), stroke_width=2, stroke_fill=(0,0,0), anchor="mm", align="center")
@@ -580,7 +581,7 @@ skip_grid, sort_samples, sampler_name, ddim_eta, n_iter, batch_size, i, denoisin
             info_dict["denoising_strength"] = denoising_strength
             info_dict["resize_mode"] = resize_mode
         with open(f"{filename_i}.yaml", "w", encoding="utf8") as f:
-            yaml.dump(info_dict, f, allow_unicode=True, width=10000)
+            yaml.dump(info_dict, f, allow_unicode=True)
 
 
 def get_next_sequence_number(path, prefix=''):
@@ -710,12 +711,8 @@ def process_images(
     comments = []
 
     prompt_matrix_parts = []
-    simple_templating = False
-    add_original_image = True
     if prompt_matrix:
         if prompt.startswith("@"):
-            simple_templating = True
-            add_original_image = not (use_RealESRGAN or use_GFPGAN)
             all_seeds, n_iter, prompt_matrix_parts, all_prompts, frows = oxlamon_matrix(prompt, seed, n_iter, batch_size)
         else:
             all_prompts = []
@@ -749,7 +746,6 @@ def process_images(
 
     precision_scope = autocast if opt.precision == "autocast" else nullcontext
     output_images = []
-    grid_captions = []
     stats = []
     with torch.no_grad(), precision_scope("cuda"), (model.ema_scope() if not opt.optimized else nullcontext()):
         init_data = func_init()
@@ -771,7 +767,6 @@ def process_images(
         for n in range(n_iter):
             print(f"Iteration: {n+1}/{n_iter}")
             prompts = all_prompts[n * batch_size:(n + 1) * batch_size]
-            captions = prompt_matrix_parts[n * batch_size:(n + 1) * batch_size]
             seeds = all_seeds[n * batch_size:(n + 1) * batch_size]
 
             if opt.optimized:
@@ -782,14 +777,20 @@ def process_images(
 
             # split the prompt if it has : for weighting
             # TODO for speed it might help to have this occur when all_prompts filled??
-            weighted_subprompts = split_weighted_subprompts(prompts[0], normalize_prompt_weights)
+            subprompts,weights = split_weighted_subprompts(prompts[0])
+            # get total weight for normalizing, this gets weird if large negative values used
+            totalPromptWeight = sum(weights)
 
             # sub-prompt weighting used if more than 1
-            if len(weighted_subprompts) > 1:
+            if len(subprompts) > 1:
                 c = torch.zeros_like(uc) # i dont know if this is correct.. but it works
-                for i in range(0, len(weighted_subprompts)):
+                for i in range(0,len(subprompts)): # normalize each prompt and add it
+                    weight = weights[i]
+                    if normalize_prompt_weights:
+                        weight = weight / totalPromptWeight
+                    #print(f"{subprompts[i]} {weight*100.0}%")
                     # note if alpha negative, it functions same as torch.sub
-                    c = torch.add(c, (model if not opt.optimized else modelCS).get_learned_conditioning(weighted_subprompts[i][0]), alpha=weighted_subprompts[i][1])
+                    c = torch.add(c, (model if not opt.optimized else modelCS).get_learned_conditioning(subprompts[i]), alpha=weight)
             else: # just behave like usual
                 c = (model if not opt.optimized else modelCS).get_learned_conditioning(prompts)
 
@@ -847,32 +848,34 @@ def process_images(
                 if use_GFPGAN and GFPGAN is not None and not use_RealESRGAN:
                     skip_save = True # #287 >_>
                     torch_gc()
-                    cropped_faces, restored_faces, restored_img = GFPGAN.enhance(original_sample[:,:,::-1], has_aligned=False, only_center_face=False, paste_back=True)
+                    cropped_faces, restored_faces, restored_img = GFPGAN.enhance(x_sample[:,:,::-1], has_aligned=False, only_center_face=False, paste_back=True)
                     gfpgan_sample = restored_img[:,:,::-1]
                     gfpgan_image = Image.fromarray(gfpgan_sample)
                     gfpgan_filename = original_filename + '-gfpgan'
+                    save_sample(image, sample_path_i, original_filename, jpg_sample, prompts, seeds, width, height, steps, cfg_scale, 
+normalize_prompt_weights, use_GFPGAN, write_info_files, prompt_matrix, init_img, uses_loopback, uses_random_seed_loopback, skip_save,
+skip_grid, sort_samples, sampler_name, ddim_eta, n_iter, batch_size, i, denoising_strength, resize_mode)
                     save_sample(gfpgan_image, sample_path_i, gfpgan_filename, jpg_sample, prompts, seeds, width, height, steps, cfg_scale, 
 normalize_prompt_weights, use_GFPGAN, write_info_files, prompt_matrix, init_img, uses_loopback, uses_random_seed_loopback, skip_save,
 skip_grid, sort_samples, sampler_name, ddim_eta, n_iter, batch_size, i, denoising_strength, resize_mode)
                     output_images.append(gfpgan_image) #287
-                    if simple_templating:
-                        grid_captions.append( captions[i] + "\ngfpgan" )
 
                 if use_RealESRGAN and RealESRGAN is not None and not use_GFPGAN:
                     skip_save = True # #287 >_>
                     torch_gc()
                     if RealESRGAN.model.name != realesrgan_model_name:
                         try_loading_RealESRGAN(realesrgan_model_name)
-                    output, img_mode = RealESRGAN.enhance(original_sample[:,:,::-1])
+                    output, img_mode = RealESRGAN.enhance(x_sample[:,:,::-1])
                     esrgan_filename = original_filename + '-esrgan4x'
                     esrgan_sample = output[:,:,::-1]
                     esrgan_image = Image.fromarray(esrgan_sample)
+                    save_sample(image, sample_path_i, original_filename, jpg_sample, prompts, seeds, width, height, steps, cfg_scale, 
+normalize_prompt_weights, use_GFPGAN, write_info_files, prompt_matrix, init_img, uses_loopback, uses_random_seed_loopback, skip_save,
+skip_grid, sort_samples, sampler_name, ddim_eta, n_iter, batch_size, i, denoising_strength, resize_mode)
                     save_sample(esrgan_image, sample_path_i, esrgan_filename, jpg_sample, prompts, seeds, width, height, steps, cfg_scale, 
 normalize_prompt_weights, use_GFPGAN, write_info_files, prompt_matrix, init_img, uses_loopback, uses_random_seed_loopback, skip_save,
 skip_grid, sort_samples, sampler_name, ddim_eta, n_iter, batch_size, i, denoising_strength, resize_mode)
                     output_images.append(esrgan_image) #287
-                    if simple_templating:
-                        grid_captions.append( captions[i] + "\nesrgan" )
 
                 if use_RealESRGAN and RealESRGAN is not None and use_GFPGAN and GFPGAN is not None:
                     skip_save = True # #287 >_>
@@ -885,21 +888,20 @@ skip_grid, sort_samples, sampler_name, ddim_eta, n_iter, batch_size, i, denoisin
                     gfpgan_esrgan_filename = original_filename + '-gfpgan-esrgan4x'
                     gfpgan_esrgan_sample = output[:,:,::-1]
                     gfpgan_esrgan_image = Image.fromarray(gfpgan_esrgan_sample)
+                    save_sample(image, sample_path_i, original_filename, jpg_sample, prompts, seeds, width, height, steps, cfg_scale, 
+normalize_prompt_weights, use_GFPGAN, write_info_files, prompt_matrix, init_img, uses_loopback, uses_random_seed_loopback, skip_save,
+skip_grid, sort_samples, sampler_name, ddim_eta, n_iter, batch_size, i, denoising_strength, resize_mode)
                     save_sample(gfpgan_esrgan_image, sample_path_i, gfpgan_esrgan_filename, jpg_sample, prompts, seeds, width, height, steps, cfg_scale, 
 normalize_prompt_weights, use_GFPGAN, write_info_files, prompt_matrix, init_img, uses_loopback, uses_random_seed_loopback, skip_save,
 skip_grid, sort_samples, sampler_name, ddim_eta, n_iter, batch_size, i, denoising_strength, resize_mode)
                     output_images.append(gfpgan_esrgan_image) #287
-                    if simple_templating:
-                        grid_captions.append( captions[i] + "\ngfpgan_esrgan" )
 
-                if not skip_save:
+                if not skip_save or (not use_GFPGAN or not use_RealESRGAN):
+
                     save_sample(image, sample_path_i, filename, jpg_sample, prompts, seeds, width, height, steps, cfg_scale, 
 normalize_prompt_weights, use_GFPGAN, write_info_files, prompt_matrix, init_img, uses_loopback, uses_random_seed_loopback, skip_save,
 skip_grid, sort_samples, sampler_name, ddim_eta, n_iter, batch_size, i, denoising_strength, resize_mode)
-                    if add_original_image or not simple_templating:
-                        output_images.append(image)
-                        if simple_templating:
-                            grid_captions.append( captions[i] )
+                    output_images.append(image)
 
                 if opt.optimized:
                     mem = torch.cuda.memory_allocated()/1e6
@@ -909,8 +911,8 @@ skip_grid, sort_samples, sampler_name, ddim_eta, n_iter, batch_size, i, denoisin
 
         if (prompt_matrix or not skip_grid) and not do_not_save_grid:
             if prompt_matrix:
-                if simple_templating:
-                    grid = image_grid(output_images, batch_size, force_n_rows=frows, captions=grid_captions)
+                if prompt.startswith("@"):
+                    grid = image_grid(output_images, batch_size, force_n_rows=frows, captions=prompt_matrix_parts)
                 else:
                     grid = image_grid(output_images, batch_size, force_n_rows=1 << ((len(prompt_matrix_parts)-1)//2))
                     try:
@@ -1117,15 +1119,15 @@ def img2img(prompt: str, image_editor_mode: str, init_info, mask_mode: str, mask
 
     if image_editor_mode == 'Mask':
         init_img = init_info["image"]
-        init_img = init_img.convert("RGB")
+        init_img = init_img.convert("RGBA")
         init_img = resize_image(resize_mode, init_img, width, height)
         init_mask = init_info["mask"]
+        init_mask = init_mask.convert("RGB")
         init_mask = resize_image(resize_mode, init_mask, width, height)
         keep_mask = mask_mode == 0
-        init_mask = init_mask.convert("RGB")
         init_mask = init_mask if keep_mask else ImageOps.invert(init_mask)
     else:
-        init_img = init_info.convert("RGB")
+        init_img = init_info
         init_mask = None
         keep_mask = False
 
@@ -1135,14 +1137,13 @@ def img2img(prompt: str, image_editor_mode: str, init_info, mask_mode: str, mask
     def init():
         image = init_img.convert("RGB")
         image = resize_image(resize_mode, image, width, height)
-        image = init_img.convert("RGB")
         image = np.array(image).astype(np.float32) / 255.0
         image = image[None].transpose(0, 3, 1, 2)
         image = torch.from_numpy(image)
 
         mask_channel = None
         if image_editor_mode == "Uncrop":
-            alpha = init_img.convert("RGB")
+            alpha = init_img.convert("RGBA")
             alpha = resize_image(resize_mode, alpha, width // 8, height // 8)
             mask_channel = alpha.split()[-1]
             mask_channel = mask_channel.filter(ImageFilter.GaussianBlur(4))
@@ -1221,13 +1222,70 @@ def img2img(prompt: str, image_editor_mode: str, init_info, mask_mode: str, mask
         return samples_ddim
 
 
+    try:
+        if loopback:
+            output_images, info = None, None
+            history = []
+            initial_seed = None
 
-    if loopback:
-        output_images, info = None, None
-        history = []
-        initial_seed = None
+            for i in range(n_iter):
+                output_images, seed, info, stats = process_images(
+                    outpath=outpath,
+                    func_init=init,
+                    func_sample=sample,
+                    prompt=prompt,
+                    seed=seed,
+                    sampler_name=sampler_name,
+                    skip_save=skip_save,
+                    skip_grid=skip_grid,
+                    batch_size=1,
+                    n_iter=1,
+                    steps=ddim_steps,
+                    cfg_scale=cfg_scale,
+                    width=width,
+                    height=height,
+                    prompt_matrix=prompt_matrix,
+                    use_GFPGAN=use_GFPGAN,
+                    use_RealESRGAN=False, # Forcefully disable upscaling when using loopback
+                    realesrgan_model_name=realesrgan_model_name,
+                    fp=fp,
+                    do_not_save_grid=True,
+                    normalize_prompt_weights=normalize_prompt_weights,
+                    init_img=init_img,
+                    init_mask=init_mask,
+                    keep_mask=keep_mask,
+                    mask_blur_strength=mask_blur_strength,
+                    denoising_strength=denoising_strength,
+                    resize_mode=resize_mode,
+                    uses_loopback=loopback,
+                    uses_random_seed_loopback=random_seed_loopback,
+                    sort_samples=sort_samples,
+                    write_info_files=write_info_files,
+                    jpg_sample=jpg_sample,
+                )
 
-        for i in range(n_iter):
+                if initial_seed is None:
+                    initial_seed = seed
+
+                init_img = output_images[0]
+                if not random_seed_loopback:
+                    seed = seed + 1
+                else:
+                    seed = seed_to_int(None)
+                denoising_strength = max(denoising_strength * 0.95, 0.1)
+                history.append(init_img)
+
+            if not skip_grid:
+                grid_count = get_next_sequence_number(outpath, 'grid-')
+                grid = image_grid(history, batch_size, force_n_rows=1)
+                grid_file = f"grid-{grid_count:05}-{seed}_{prompt.replace(' ', '_').translate({ord(x): '' for x in invalid_filename_chars})[:128]}.{grid_ext}"
+                grid.save(os.path.join(outpath, grid_file), grid_format, quality=grid_quality, lossless=grid_lossless, optimize=True)
+
+
+            output_images = history
+            seed = initial_seed
+
+        else:
             output_images, seed, info, stats = process_images(
                 outpath=outpath,
                 func_init=init,
@@ -1237,18 +1295,17 @@ def img2img(prompt: str, image_editor_mode: str, init_info, mask_mode: str, mask
                 sampler_name=sampler_name,
                 skip_save=skip_save,
                 skip_grid=skip_grid,
-                batch_size=1,
-                n_iter=1,
+                batch_size=batch_size,
+                n_iter=n_iter,
                 steps=ddim_steps,
                 cfg_scale=cfg_scale,
                 width=width,
                 height=height,
                 prompt_matrix=prompt_matrix,
                 use_GFPGAN=use_GFPGAN,
-                use_RealESRGAN=False, # Forcefully disable upscaling when using loopback
+                use_RealESRGAN=use_RealESRGAN,
                 realesrgan_model_name=realesrgan_model_name,
                 fp=fp,
-                do_not_save_grid=True,
                 normalize_prompt_weights=normalize_prompt_weights,
                 init_img=init_img,
                 init_mask=init_mask,
@@ -1257,98 +1314,68 @@ def img2img(prompt: str, image_editor_mode: str, init_info, mask_mode: str, mask
                 denoising_strength=denoising_strength,
                 resize_mode=resize_mode,
                 uses_loopback=loopback,
-                uses_random_seed_loopback=random_seed_loopback,
                 sort_samples=sort_samples,
                 write_info_files=write_info_files,
                 jpg_sample=jpg_sample,
             )
 
-            if initial_seed is None:
-                initial_seed = seed
+        del sampler
 
-            init_img = output_images[0]
-            if not random_seed_loopback:
-                seed = seed + 1
-            else:
-                seed = seed_to_int(None)
-            denoising_strength = max(denoising_strength * 0.95, 0.1)
-            history.append(init_img)
-
-        if not skip_grid:
-            grid_count = get_next_sequence_number(outpath, 'grid-')
-            grid = image_grid(history, batch_size, force_n_rows=1)
-            grid_file = f"grid-{grid_count:05}-{seed}_{prompt.replace(' ', '_').translate({ord(x): '' for x in invalid_filename_chars})[:128]}.{grid_ext}"
-            grid.save(os.path.join(outpath, grid_file), grid_format, quality=grid_quality, lossless=grid_lossless, optimize=True)
-
-
-        output_images = history
-        seed = initial_seed
-
-    else:
-        output_images, seed, info, stats = process_images(
-            outpath=outpath,
-            func_init=init,
-            func_sample=sample,
-            prompt=prompt,
-            seed=seed,
-            sampler_name=sampler_name,
-            skip_save=skip_save,
-            skip_grid=skip_grid,
-            batch_size=batch_size,
-            n_iter=n_iter,
-            steps=ddim_steps,
-            cfg_scale=cfg_scale,
-            width=width,
-            height=height,
-            prompt_matrix=prompt_matrix,
-            use_GFPGAN=use_GFPGAN,
-            use_RealESRGAN=use_RealESRGAN,
-            realesrgan_model_name=realesrgan_model_name,
-            fp=fp,
-            normalize_prompt_weights=normalize_prompt_weights,
-            init_img=init_img,
-            init_mask=init_mask,
-            keep_mask=keep_mask,
-            mask_blur_strength=mask_blur_strength,
-            denoising_strength=denoising_strength,
-            resize_mode=resize_mode,
-            uses_loopback=loopback,
-            sort_samples=sort_samples,
-            write_info_files=write_info_files,
-            jpg_sample=jpg_sample,
-        )
-
-    del sampler
-
-    return output_images, seed, info, stats
-
-
-prompt_parser = re.compile("""
-    (?P<prompt>                # capture group for 'prompt'
-    [^:]+                      # match one or more non ':' characters
-    )                          # end 'prompt'
-    (?:                        # non-capture group
-    :+                         # match one or more ':' characters  
-    (?P<weight>                # capture group for 'weight'
-    -?\d+(?:\.\d+)?            # match positive or negative decimal number
-    )?                         # end weight capture group, make optional 
-    \s*                        # strip spaces after weight
-    |                          # OR
-    $                          # else, if no ':' then match end of line
-    )                          # end non-capture group
-""", re.VERBOSE)
+        return output_images, seed, info, stats
+    except RuntimeError as e:
+        err = e
+        err_msg = f'CRASHED:<br><textarea rows="5" style="color:white;background: black;width: -webkit-fill-available;font-family: monospace;font-size: small;font-weight: bold;">{str(e)}</textarea><br><br>Please wait while the program restarts.'
+        stats = err_msg
+        return [], seed, 'err', stats
+    finally:
+        if err:
+            crash(err, '!!Runtime error (img2img)!!')
 
 # grabs all text up to the first occurrence of ':' as sub-prompt
 # takes the value following ':' as weight
 # if ':' has no value defined, defaults to 1.0
 # repeats until no text remaining
-def split_weighted_subprompts(input_string, normalize=True):
-    parsed_prompts = [(match.group("prompt"), float(match.group("weight") or 1)) for match in re.finditer(prompt_parser, input_string)]
-    if not normalize:
-        return parsed_prompts
-    # this probably still doesn't handle negative weights very well
-    weight_sum = sum(map(lambda x: x[1], parsed_prompts))
-    return [(x[0], x[1] / weight_sum) for x in parsed_prompts]
+# TODO this could probably be done with less code
+def split_weighted_subprompts(text):
+    print(text)
+    remaining = len(text)
+    prompts = []
+    weights = []
+    while remaining > 0:
+        if ":" in text:
+            idx = text.index(":") # first occurrence from start
+            # grab up to index as sub-prompt
+            prompt = text[:idx]
+            remaining -= idx
+            # remove from main text
+            text = text[idx+1:]
+            # find value for weight, assume it is followed by a space or comma
+            idx = len(text) # default is read to end of text
+            if " " in text:
+                idx = min(idx,text.index(" ")) # want the closer idx
+            if "," in text:
+                idx = min(idx,text.index(",")) # want the closer idx
+            if idx != 0:
+                try:
+                    weight = float(text[:idx])
+                except: # couldn't treat as float
+                    print(f"Warning: '{text[:idx]}' is not a value, are you missing a space or comma after a value?")
+                    weight = 1.0
+            else: # no value found
+                weight = 1.0
+            # remove from main text
+            remaining -= idx
+            text = text[idx+1:]
+            # append the sub-prompt and its weight
+            prompts.append(prompt)
+            weights.append(weight)
+        else: # no : found
+            if len(text) > 0: # there is still text though
+                # take remainder as weight 1
+                prompts.append(text)
+                weights.append(1.0)
+            remaining = 0
+    return prompts, weights
 
 def slerp(device, t, v0:torch.Tensor, v1:torch.Tensor, DOT_THRESHOLD=0.9995):
     v0 = v0.detach().cpu().numpy()
@@ -1546,7 +1573,6 @@ def show_help():
 def hide_help():
     return [gr.update(visible=True), gr.update(visible=False), gr.update(value="")]
 
-
 demo = draw_gradio_ui(opt,
                       user_defaults=user_defaults,
                       txt2img=txt2img,
@@ -1584,7 +1610,7 @@ class ServerLauncher(threading.Thread):
         if not opt.share:
             demo.queue(concurrency_count=1)
         if opt.share and opt.share_password:
-            gradio_params['auth'] = ('webui', opt.share_password)    
+            gradio_params['auth'] = ('alpha', opt.share_password)    
         self.demo.launch(**gradio_params)
 
     def stop(self):
